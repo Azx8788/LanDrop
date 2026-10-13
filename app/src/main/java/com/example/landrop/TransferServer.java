@@ -347,7 +347,7 @@ public class TransferServer {
         return new String(line.toByteArray(), Charset.forName("UTF-8"));
     }
 
-    private String queryValue(String query, String key) throws Exception {
+    private String queryValue(String query, String key) throws IOException {
         if (query == null) return null;
         for (String item : query.split("&")) {
             String[] kv = item.split("=", 2);
