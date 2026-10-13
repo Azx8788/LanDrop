@@ -1,45 +1,104 @@
-# LanDrop - 局域网文件传输
+# LanDrop - 局域网设备发现与文件传输
 
-极简 Android 应用，手机运行 HTTP 服务，电脑浏览器直接上传/下载文件。
+极简的局域网对传工具，**手机 + Windows 电脑**共用同一套 TCP 协议。
+固定端口扫描发现设备 → 配对（申请+同意）→ 定向传文件。
 
 ## 特点
 
 - **兼容安卓 4.4**（minSdk 19），老设备友好
-- **零第三方依赖**，纯 Java 标准库 + Android 原生 API
-- **APK 极小**，开启 R8 压缩 + 资源压缩
-- **4 位配对码认证**，防止局域网内其他设备随意访问
-- **浏览器操作**，电脑端无需安装任何软件
+- **零第三方依赖**：Android 纯 Java 标准库；PC 用 Go 标准库，编译成单个 exe
+- **APK / exe 极小**
+- **配对机制**：只有相互同意的设备才能传文件，同一局域网其他设备看不到传输内容
+- **双向**：既能接收（对方推送），也能主动拉取（浏览对方文件并下载）
+- **无需输入 IP**：自动扫描局域网发现设备
 
-## 使用方法
+## 使用流程
 
-1. 手机连接 Wi-Fi，打开 LanDrop
-2. 点击「启动传输服务」
-3. 在电脑浏览器输入手机显示的地址（含配对码）
-4. 网页上上传/下载文件
+1. 两台设备（手机/电脑）连接**同一 Wi-Fi**
+2. 都启动 LanDrop（手机点「启动服务」，PC 直接运行）
+3. 任一方点「扫描设备」/ 输入 `s`，看到对方
+4. 发起连接申请（手机点设备→「请求配对」/ PC 输入 `c 1`）
+5. 对方确认后建立配对
+6. 配对后可：**浏览对方文件并下载**、**发送文件给对方**
+
+未参与的设备（如第三台 c）既看不到设备间的连接，也拿不到任何传输内容。
+
+## 通信协议（TCP 8765，文本行）
+
+```
+DISCOVER <name>     探测设备        ->  HELLO <name>
+CONNECT <name>      请求配对        ->  ACCEPT / REJECT
+LIST                请求文件列表    ->  FILES <count> + count 行 "<enc(name)> <size>"
+GET <enc(name)>     请求下载        ->  FILE <enc(name)> <size> + 数据
+SEND <name> <enc(filename)> <size>  ->  READY / NO + 数据 + OK
+BYE                 断开
+```
+
+- 文件名 URL 编码（支持空格/中文）
+- 只有已配对 IP 才能 LIST/GET/SEND
+- 每个操作独立一条 TCP 连接
+
+## 目录结构
+
+```
+LanDrop/
+├── app/                          Android APP（Java）
+│   └── src/main/java/com/example/landrop/
+│       ├── Protocol.java         协议定义
+│       ├── Device.java           设备模型
+│       ├── DeviceScanner.java    TCP 端口扫描发现
+│       ├── TransferServer.java   TCP 服务端
+│       ├── TransferClient.java   TCP 客户端操作
+│       └── MainActivity.java     界面
+├── pc/                           Windows 端（Go）
+│   ├── main.go
+│   └── go.mod
+└── .github/workflows/
+    ├── build.yml                 Android 构建
+    └── build-pc.yml              Windows exe 构建
+```
 
 ## 技术参数
 
-| 项目 | 值 |
-|------|-----|
-| minSdk | 19 (Android 4.4) |
-| targetSdk | 28 |
-| compileSdk | 34 |
-| AGP | 8.2.2 |
-| Gradle | 8.2 |
-| JDK | 17 |
-| 依赖 | 无 |
+| 项目 | Android | PC |
+|------|---------|-----|
+| 语言 | Java | Go |
+| 最低系统 | Android 4.4 (API 19) | Windows 7+ |
+| 依赖 | 无 | 无 |
+| 端口 | 8765 | 8765 |
 
 ## 构建
 
+**Android**：GitHub Actions 自动构建 → 下载 `LanDrop-release` artifact（APK）
+
+**PC**：GitHub Actions 自动构建 → 下载 `LanDrop-pc` artifact（`LanDrop.exe`）
+
+PC 本地构建：
 ```bash
-gradle assembleRelease
-# 产物: app/build/outputs/apk/release/app-release.apk
+cd pc
+GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o LanDrop.exe .
 ```
 
-或通过 GitHub Actions 自动构建。
+## PC 端命令
+
+```
+s                     扫描设备
+d                     显示设备列表
+c <编号|IP>           连接（配对）设备
+l <编号|IP>           列出对方文件
+g <编号|IP> <文件名>   从对方下载文件
+p <编号|IP> <路径>     发送本地文件给对方
+y / n                 同意 / 拒绝待处理的请求
+q                     退出
+```
+
+## 文件存储
+
+- Android：应用专属目录 `Android/data/com.example.landrop/files/landrop/`
+- PC：exe 同目录下的 `landrop/`
 
 ## 安全提醒
 
 - 仅限私人局域网使用，不要暴露到公共网络
-- 使用明文 HTTP，不加密传输内容
-- 配对码仅防止随意访问，不是强认证
+- 传输使用明文 TCP，不加密内容
+- 配对机制可防止随意访问，但不是强加密认证

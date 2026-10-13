@@ -3,57 +3,59 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    android:padding="20dp">
+    android:padding="12dp">
 
     <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="LanDrop 局域网文件传输"
-        android:textSize="22sp"
-        android:layout_marginBottom="16dp" />
-
-    <TextView
-        android:id="@+id/tvStatus"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="服务未启动"
-        android:textSize="16sp"
-        android:layout_marginBottom="8dp" />
-
-    <TextView
-        android:id="@+id/tvAddress"
+        android:id="@+id/tvInfo"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="请连接 Wi-Fi"
-        android:textSize="16sp"
-        android:textIsSelectable="true"
-        android:layout_marginBottom="8dp" />
-
-    <TextView
-        android:id="@+id/tvPin"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:textSize="20sp"
+        android:text="LanDrop"
+        android:textSize="15sp"
         android:textStyle="bold"
-        android:layout_marginBottom="16dp" />
+        android:layout_marginBottom="8dp" />
 
-    <Button
-        android:id="@+id/btnStart"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="启动传输服务" />
+        android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/btnStop"
+        <Button
+            android:id="@+id/btnServer"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="启动服务"
+            android:textSize="13sp" />
+
+        <Button
+            android:id="@+id/btnScan"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="扫描设备"
+            android:textSize="13sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvHint"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="停止传输服务"
-        android:layout_marginBottom="16dp" />
+        android:text="点击「扫描设备」查找同一 Wi-Fi 下的设备"
+        android:textSize="12sp"
+        android:paddingTop="6dp"
+        android:paddingBottom="6dp" />
+
+    <ListView
+        android:id="@+id/listDevices"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="操作方法：\n\n1. 手机与电脑连接同一 Wi-Fi\n2. 点击「启动传输服务」\n3. 在电脑浏览器输入上方地址（含配对码）\n4. 网页上传/下载文件\n\n传输期间请保持本页面开启，关闭页面会停止服务。"
-        android:textSize="14sp" />
+        android:text="说明：只有相互配对的设备才能传文件，同一局域网其他设备看不到传输内容。文件保存在应用目录 landrop/ 下。"
+        android:textSize="11sp"
+        android:paddingTop="6dp" />
 
 </LinearLayout>

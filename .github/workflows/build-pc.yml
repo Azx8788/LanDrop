@@ -1,0 +1,32 @@
+name: Build PC (Windows)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'pc/**'
+      - '.github/workflows/build-pc.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build Windows exe
+        working-directory: pc
+        run: |
+          GOOS=windows GOARCH=amd64 go build -ldflags "-s -w" -o LanDrop.exe .
+
+      - name: Upload exe
+        uses: actions/upload-artifact@v4
+        with:
+          name: LanDrop-pc
+          path: pc/LanDrop.exe
+          retention-days: 30
