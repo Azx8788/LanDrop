@@ -29,6 +29,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
+
+    lint {
+        // targetSdk 28 是为老设备兼容的有意选择，不上架 Google Play，
+        // 因此禁用「要求 targetSdk >= 33」的检查
+        disable 'ExpiredTargetSdkVersion'
+    }
 }
 
 dependencies {
