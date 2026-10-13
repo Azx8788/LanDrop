@@ -41,6 +41,7 @@ public class Protocol {
     public static final String SEND     = "SEND";
     public static final String READY    = "READY";
     public static final String NO       = "NO";
+    public static final String OK       = "OK";
     public static final String BYE      = "BYE";
 
     /** 读一行（到 \n），返回去掉 \r\n 的内容；流结束返回 null。 */
