@@ -1,0 +1,36 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.example.landrop'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.example.landrop'
+        minSdk 19          // Android 4.4
+        targetSdk 28       // 兼容老系统，避免新版限制
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            // 启用代码压缩和资源压缩，减小 APK 体积
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+            // 使用 debug 签名，产出的 release APK 可直接安装
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+dependencies {
+    // 零第三方依赖，最小化体积
+}

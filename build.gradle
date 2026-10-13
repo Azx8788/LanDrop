@@ -1,0 +1,5 @@
+// 根项目构建文件
+// AGP 8.2.2 + Gradle 8.2 + JDK 17
+plugins {
+    id 'com.android.application' version '8.2.2' apply false
+}
