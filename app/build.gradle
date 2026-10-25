@@ -2,6 +2,10 @@ plugins {
     id 'com.android.application'
 }
 
+// 固定签名：CI 通过环境变量提供 keystore；本地没有这些变量时回退 debug 签名
+def releaseKsPath = System.getenv("RELEASE_KEYSTORE_PATH")
+def hasReleaseKs = releaseKsPath != null && new File(releaseKsPath).exists()
+
 android {
     namespace 'com.example.landrop'
     compileSdk 34
@@ -14,14 +18,26 @@ android {
         versionName '1.0'
     }
 
+    signingConfigs {
+        if (hasReleaseKs) {
+            release {
+                storeFile file(releaseKsPath)
+                storeType 'JKS'
+                storePassword System.getenv("RELEASE_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             // 启用代码压缩和资源压缩，减小 APK 体积
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            // 使用 debug 签名，产出的 release APK 可直接安装
-            signingConfig signingConfigs.debug
+            // CI 有固定签名时用固定签名，否则用 debug 签名（产出的 release APK 可直接安装）
+            signingConfig(hasReleaseKs ? signingConfigs.release : signingConfigs.debug)
         }
     }
 
