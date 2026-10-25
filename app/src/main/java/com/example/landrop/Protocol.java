@@ -18,11 +18,12 @@ import java.nio.charset.Charset;
  *   REJECT                 拒绝配对
  *   LIST                   请求文件列表（需已配对）
  *   FILES <count>          响应：后面 count 行 "<name> <size>"
- *   GET <name>             请求下载某文件
- *   FILE <name> <size>     响应：后面紧跟 size 字节文件数据
- *   SEND <name> <size>     通知对方要推送文件
- *   READY                  准备好接收文件数据
+ *   GET <name> [<offset>]  请求下载某文件，可带 offset 续传
+ *   FILE <name> <size> [<offset>]  响应：后面紧跟 size-offset 字节文件数据
+ *   SEND <name> <name> <size>      通知对方要推送文件
+ *   READY [<offset>]       准备好接收文件数据，可带 offset 让发送方续传
  *   NO <reason>            拒绝
+ *   OK <msg>               成功
  *   BYE                    断开
  */
 public class Protocol {

@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <!-- 前台保活服务，防止后台被回收导致监听/传输中断 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
     <!-- 存储权限：写入公共下载目录 Download/landrop；Android 6.0+ 需在运行时申请 -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
@@ -31,6 +33,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- 前台保活服务：服务运行时显示常驻通知，保持进程不被回收 -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false" />
 
     </application>
 </manifest>

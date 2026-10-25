@@ -3,6 +3,7 @@ package com.example.landrop;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -25,7 +26,11 @@ import android.widget.Toast;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -35,6 +40,8 @@ import java.util.concurrent.TimeUnit;
  *
  * 单页面：显示本机信息 + 设备列表。
  * 点击设备可配对连接、浏览对方文件、发送文件。
+ *
+ * 传输过程中显示进度条；断开配对会发 BYE 让双方状态同步。
  */
 public class MainActivity extends Activity implements TransferServer.ServerCallback {
 
@@ -56,6 +63,10 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     private String pendingSendIp;   // 选文件前记住目标设备
 
     private final Handler ui = new Handler(Looper.getMainLooper());
+
+    // 进度对话框
+    private ProgressDialog progress;
+    private long lastProgressPost;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -100,10 +111,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
 
     private void toggleServer() {
         if (server.isRunning()) {
-            server.stop();
-            btnServer.setText("启动服务");
-            toast("服务已停止");
-            refreshInfo();
+            stopServer();
         } else {
             startServer();
         }
@@ -113,10 +121,25 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         try {
             server.start(myName);
             btnServer.setText("停止服务");
+            // 启动前台保活服务，防止后台被回收导致监听中断
+            Intent keep = new Intent(this, KeepAliveService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(keep);
+            } else {
+                startService(keep);
+            }
             refreshInfo();
         } catch (IOException e) {
             toast("启动失败：" + e.getMessage());
         }
+    }
+
+    private void stopServer() {
+        server.stop();
+        stopService(new Intent(this, KeepAliveService.class));
+        btnServer.setText("启动服务");
+        toast("服务已停止");
+        refreshInfo();
     }
 
     private void refreshInfo() {
@@ -167,37 +190,44 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         refreshInfo();
     }
 
-    /* ========== 扫描设备 ========== */
+    /* ========== 扫描设备（增量显示） ========== */
 
     private void doScan() {
         if ("0.0.0.0".equals(myIp)) {
-            toast("未获取到 Wi-Fi IP，请检查网络");
+            toast("未获取到局域网 IP，请检查 Wi-Fi");
             return;
         }
         tvHint.setText("正在扫描局域网…");
         btnScan.setEnabled(false);
+        devices.clear();
+        adapter.notifyDataSetChanged();
 
-        new Thread(new Runnable() {
+        DeviceScanner.scanAsync(myIp, new DeviceScanner.Callback() {
             @Override
-            public void run() {
-                final List<Device> found = DeviceScanner.scan(myIp);
+            public void onDeviceFound(final Device d) {
+                final boolean paired = server.isPaired(d.ip);
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
-                        devices.clear();
-                        // 保留配对状态
-                        for (Device d : found) {
-                            d.paired = server.isPaired(d.ip);
-                            devices.add(d);
-                        }
+                        d.paired = paired;
+                        devices.add(d);
                         adapter.notifyDataSetChanged();
+                    }
+                });
+            }
+
+            @Override
+            public void onScanFinished(final int total) {
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
                         btnScan.setEnabled(true);
                         tvHint.setText("发现 " + devices.size() + " 台设备"
                                 + (devices.isEmpty() ? "（确认对方已启动服务）" : "（点击设备操作）"));
                     }
                 });
             }
-        }, "LanDrop-ScanUI").start();
+        });
     }
 
     /* ========== 设备菜单 ========== */
@@ -267,6 +297,13 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     }
 
     private void doDisconnect(final Device d) {
+        // 通知对方断开，同时清理本地配对状态
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                TransferClient.bye(d.ip);
+            }
+        }, "LanDrop-Bye").start();
         server.removePaired(d.ip);
         d.paired = false;
         adapter.notifyDataSetChanged();
@@ -328,34 +365,45 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     }
 
     private void downloadFile(final Device d, final TransferClient.FileEntry f) {
+        final File dir;
+        try {
+            dir = TransferServer.resolveSaveDir(this);
+        } catch (IOException e) {
+            toast("保存目录不可用：" + e.getMessage());
+            return;
+        }
+        ensureStoragePermission();
+        showProgress("正在下载 " + f.name);
         tvHint.setText("正在下载 " + f.name + "…");
         new Thread(new Runnable() {
             @Override
             public void run() {
                 String err = null;
-                File target = null;
+                File dest = null;
                 try {
-                    File dir = TransferServer.resolveSaveDir(MainActivity.this);
-                    target = TransferServer.resolveFileIn(dir, f.name);
-                    if (target == null) throw new IOException("文件名不合法");
-                    if (target.exists()) {
-                        target = new File(dir, System.currentTimeMillis() + "_" + f.name);
-                    }
-                    TransferClient.download(d.ip, f.name, target);
+                    dest = TransferClient.download(d.ip, f.name, dir,
+                            new TransferClient.Progress() {
+                                @Override
+                                public void onProgress(long done, long total) {
+                                    postProgress(done, total);
+                                }
+                            });
                 } catch (IOException e) {
                     err = e.getMessage();
                 }
                 final String errFinal = err;
-                final File targetFinal = target;
+                final File destFinal = dest;
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
+                        hideProgress();
                         if (errFinal == null) {
-                            toast("已下载：" + targetFinal.getName());
-                            tvHint.setText("已下载：" + targetFinal.getName());
+                            String path = destFinal.getAbsolutePath();
+                            toast("已下载：\n" + path);
+                            tvHint.setText("已下载：" + path);
                         } else {
                             toast("下载失败：" + errFinal);
-                            tvHint.setText("下载失败");
+                            tvHint.setText("下载失败：" + errFinal);
                         }
                     }
                 });
@@ -407,6 +455,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         final String fname = name;
         final long fsize = size;
         tvHint.setText("正在发送 " + fname + "…");
+        showProgress("正在发送 " + fname);
 
         new Thread(new Runnable() {
             @Override
@@ -425,7 +474,14 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                         in = getContentResolver().openInputStream(uri);
                         if (in == null || useSize < 0) throw new IOException("无法确定文件大小");
                     }
-                    ok = TransferClient.send(ip, myName, fname, useSize, in);
+                    final long finalSize = useSize;
+                    ok = TransferClient.send(ip, myName, fname, useSize, in,
+                            new TransferClient.Progress() {
+                                @Override
+                                public void onProgress(long done, long total) {
+                                    postProgress(done, total);
+                                }
+                            });
                 } catch (IOException e) {
                     err = e.getMessage();
                 } finally {
@@ -436,6 +492,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                 ui.post(new Runnable() {
                     @Override
                     public void run() {
+                        hideProgress();
                         if (okFinal) {
                             toast("发送成功：" + fname);
                             tvHint.setText("发送完成");
@@ -462,7 +519,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         }
     }
 
-    /* ========== 服务端回调（从后台线程 -> UI 弹窗） ========== */
+    /* ========== 服务端回调（从后台线程 -> UI） ========== */
 
     @Override
     public boolean onConnectRequest(final String remoteName, final String ip) {
@@ -522,12 +579,87 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     }
 
     @Override
+    public void onProgress(final String remoteName, final String filename,
+                           final long done, final long total) {
+        long now = System.currentTimeMillis();
+        if (done < total && now - lastProgressPost < 120) return;
+        lastProgressPost = now;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                if (progress == null) {
+                    showProgress("正在接收 " + filename);
+                }
+                updateProgress(done, total);
+            }
+        });
+    }
+
+    @Override
     public void onFileReceived(final String remoteName, final String filename) {
         ui.post(new Runnable() {
             @Override
             public void run() {
-                toast("已接收 " + remoteName + " 的文件：" + filename);
-                tvHint.setText("已接收：" + filename);
+                hideProgress();
+                String path;
+                try {
+                    path = TransferServer.resolveSaveDir(MainActivity.this)
+                            + "/" + filename;
+                } catch (IOException e) {
+                    path = filename;
+                }
+                toast("已接收 " + remoteName + " 的文件：\n" + path);
+                tvHint.setText("已接收：" + path);
+            }
+        });
+    }
+
+    /* ========== 进度对话框 ========== */
+
+    private void showProgress(String title) {
+        hideProgress();
+        progress = new ProgressDialog(this);
+        progress.setTitle(title);
+        progress.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progress.setMax(1000);
+        progress.setProgress(0);
+        progress.setMessage("准备中…");
+        progress.setCancelable(false);
+        progress.setIndeterminate(false);
+        progress.show();
+    }
+
+    private void updateProgress(long done, long total) {
+        if (progress == null || !progress.isShowing()) return;
+        if (total > 0) {
+            progress.setIndeterminate(false);
+            progress.setMax(1000);
+            int pct = (int) (done * 1000 / total);
+            progress.setProgress(pct);
+            progress.setMessage(humanSize(done) + " / " + humanSize(total)
+                    + "  (" + (done * 100 / total) + "%)");
+        } else {
+            progress.setIndeterminate(true);
+            progress.setMessage(humanSize(done));
+        }
+    }
+
+    private void hideProgress() {
+        if (progress != null) {
+            try { progress.dismiss(); } catch (Exception ignored) {}
+            progress = null;
+        }
+    }
+
+    /** 把进度事件节流后切到主线程更新。 */
+    private void postProgress(final long done, final long total) {
+        long now = System.currentTimeMillis();
+        if (done < total && now - lastProgressPost < 120) return;
+        lastProgressPost = now;
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                updateProgress(done, total);
             }
         });
     }
@@ -535,16 +667,32 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     /* ========== 工具 ========== */
 
     private String getIpAddress() {
+        // 先试 Wi-Fi（最常用场景）
         try {
             WifiManager wifi = (WifiManager)
                     getApplicationContext().getSystemService(Context.WIFI_SERVICE);
             int ip = wifi.getConnectionInfo().getIpAddress();
-            if (ip == 0) return "0.0.0.0";
-            return String.format("%d.%d.%d.%d",
-                    ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
-        } catch (Exception e) {
-            return "0.0.0.0";
-        }
+            if (ip != 0) {
+                return String.format("%d.%d.%d.%d",
+                        ip & 0xff, (ip >> 8) & 0xff, (ip >> 16) & 0xff, (ip >> 24) & 0xff);
+            }
+        } catch (Exception ignored) {}
+        // 兜底：枚举网卡，找第一个非回环 IPv4（热点、以太网等）
+        try {
+            Enumeration<NetworkInterface> en = NetworkInterface.getNetworkInterfaces();
+            while (en != null && en.hasMoreElements()) {
+                NetworkInterface ni = en.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                Enumeration<InetAddress> addrs = ni.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress addr = addrs.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return "0.0.0.0";
     }
 
     private String humanSize(long b) {
@@ -560,7 +708,11 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
 
     @Override
     protected void onDestroy() {
-        if (server != null) server.stop();
+        hideProgress();
+        if (server != null) {
+            server.stop();
+            stopService(new Intent(this, KeepAliveService.class));
+        }
         super.onDestroy();
     }
 }

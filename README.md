@@ -30,14 +30,16 @@
 DISCOVER <name>     探测设备        ->  HELLO <name>
 CONNECT <name>      请求配对        ->  ACCEPT / REJECT
 LIST                请求文件列表    ->  FILES <count> + count 行 "<enc(name)> <size>"
-GET <enc(name)>     请求下载        ->  FILE <enc(name)> <size> + 数据
-SEND <name> <enc(filename)> <size>  ->  READY / NO + 数据 + OK
+GET <enc(name)> [<offset>]          ->  FILE <enc(name)> <size> [<offset>] + 数据
+SEND <name> <enc(filename)> <size>  ->  READY [<offset>] / NO + 数据 + OK
 BYE                 断开
 ```
 
 - 文件名 URL 编码（支持空格/中文）
 - 只有已配对 IP 才能 LIST/GET/SEND
 - 每个操作独立一条 TCP 连接
+- **断点续传**：GET 可带 offset 从指定位置续传；SEND 时接收方若已有同名 `.part`，会在 READY 里回复已收字节数，发送方据此跳过已传部分。不带 offset 时为旧格式，向后兼容
+- **传输进度**：两端各自按本地读/写的字节数计算，无需额外协议消息
 
 ## 目录结构
 

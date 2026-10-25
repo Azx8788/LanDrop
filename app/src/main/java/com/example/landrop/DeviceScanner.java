@@ -66,14 +66,45 @@ public class DeviceScanner {
         return result;
     }
 
-    /** 异步扫描（用于 UI，边发现边回调）。 */
+    /**
+     * 异步扫描（边发现边回调，UI 可实时显示新设备）。
+     * onDeviceFound 在后台线程调用，回调里更新 UI 请自行切到主线程。
+     */
     public static void scanAsync(final String myIp, final Callback cb) {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                List<Device> list = scan(myIp);
-                for (Device d : list) cb.onDeviceFound(d);
-                cb.onScanFinished(list.size());
+                String prefix = Protocol.subnetPrefix(myIp);
+                if (prefix == null) {
+                    cb.onScanFinished(0);
+                    return;
+                }
+
+                ExecutorService pool = Executors.newFixedThreadPool(CONCURRENCY);
+                List<Future<?>> futures = new ArrayList<Future<?>>();
+                final Set<String> seen = Collections.synchronizedSet(new HashSet<String>());
+                final int[] count = new int[]{0};
+
+                for (int i = 1; i <= 254; i++) {
+                    final String ip = prefix + i;
+                    if (ip.equals(myIp)) continue;
+                    futures.add(pool.submit(new Runnable() {
+                        @Override
+                        public void run() {
+                            Device d = probe(ip);
+                            if (d != null && seen.add(d.ip)) {
+                                cb.onDeviceFound(d);
+                                synchronized (count) { count[0]++; }
+                            }
+                        }
+                    }));
+                }
+
+                for (Future<?> f : futures) {
+                    try { f.get(2, TimeUnit.SECONDS); } catch (Exception ignored) {}
+                }
+                pool.shutdownNow();
+                cb.onScanFinished(count[0]);
             }
         }, "LanDrop-Scan").start();
     }

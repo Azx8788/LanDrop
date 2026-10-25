@@ -1,6 +1,7 @@
 package com.example.landrop;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.os.Environment;
 
 import java.io.*;
@@ -15,12 +16,22 @@ import java.util.concurrent.*;
  *   发现 / 配对 / 文件列表 / 下载 / 接收推送
  *
  * 配对机制：只有已配对的 IP 才能请求列表、下载、推送文件。
- * 未配对设备（如 c）看不到、也拿不到 a/b 之间传输的任何内容。
+ * 配对状态持久化到 SharedPreferences，重启后保留。
+ *
+ * 断点续传：
+ *   - GET：请求可带 offset，从指定位置发送剩余字节
+ *   - SEND：接收方发现已有 <name>.part，在 READY 里回复已收字节数，发送方据此续传
  */
 public class TransferServer {
 
+    private static final String PREFS = "landrop_pairs";
+    private static final String KEY_PAIRS = "paired_ips";
+    private static final int SO_TIMEOUT = 60000;
+    private static final long PROGRESS_STEP = 32768;
+
     private final Context context;
     private final ServerCallback callback;
+    private final SharedPreferences prefs;
 
     private volatile boolean running;
     private ServerSocket serverSocket;
@@ -28,11 +39,11 @@ public class TransferServer {
     private Thread acceptThread;
     private String myName;
 
-    /** 已配对设备的 IP 集合（内存态，重启即清空）。 */
+    /** 已配对设备的 IP 集合（持久化，重启后保留）。 */
     private final Set<String> pairedIps =
             Collections.synchronizedSet(new HashSet<String>());
 
-    /** 需要与 UI 线程交互的回调（弹窗确认）。 */
+    /** 需要与 UI 线程交互的回调（弹窗确认、进度）。 */
     public interface ServerCallback {
         /** 收到配对申请，返回是否同意（阻塞直到用户选择）。 */
         boolean onConnectRequest(String remoteName, String ip);
@@ -40,11 +51,17 @@ public class TransferServer {
         boolean onReceiveRequest(String remoteName, String filename, long size);
         /** 文件接收完成。 */
         void onFileReceived(String remoteName, String filename);
+        /** 接收进度（后台线程调用）。 */
+        void onProgress(String remoteName, String filename, long done, long total);
     }
 
     public TransferServer(Context context, ServerCallback callback) {
         this.context = context.getApplicationContext();
         this.callback = callback;
+        this.prefs = this.context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        // 恢复上次保存的配对设备
+        Set<String> saved = prefs.getStringSet(KEY_PAIRS, Collections.<String>emptySet());
+        if (saved != null) pairedIps.addAll(saved);
     }
 
     /* ========== 生命周期 ========== */
@@ -57,7 +74,7 @@ public class TransferServer {
         serverSocket.setReuseAddress(true);
         serverSocket.bind(new InetSocketAddress(Protocol.PORT));
 
-        workers = Executors.newFixedThreadPool(4);
+        workers = Executors.newFixedThreadPool(16);
         running = true;
 
         acceptThread = new Thread(new Runnable() {
@@ -66,7 +83,7 @@ public class TransferServer {
                 while (running) {
                     try {
                         Socket s = serverSocket.accept();
-                        s.setSoTimeout(30000);
+                        s.setSoTimeout(SO_TIMEOUT);
                         workers.execute(new Handler(s));
                     } catch (IOException e) {
                         if (running) e.printStackTrace();
@@ -86,11 +103,23 @@ public class TransferServer {
     public boolean isRunning() { return running; }
     public String getMyName() { return myName; }
     public boolean isPaired(String ip) { return pairedIps.contains(ip); }
-    public void addPaired(String ip) { pairedIps.add(ip); }
-    public void removePaired(String ip) { pairedIps.remove(ip); }
+
+    public void addPaired(String ip) {
+        pairedIps.add(ip);
+        persistPairs();
+    }
+
+    public void removePaired(String ip) {
+        pairedIps.remove(ip);
+        persistPairs();
+    }
 
     public Set<String> getPairedIps() {
         synchronized (pairedIps) { return new HashSet<String>(pairedIps); }
+    }
+
+    private void persistPairs() {
+        prefs.edit().putStringSet(KEY_PAIRS, getPairedIps()).apply();
     }
 
     /* ========== 接收目录 ========== */
@@ -152,6 +181,16 @@ public class TransferServer {
         return resolveFileIn(getDir(), name);
     }
 
+    /** 在 dir 内为 name 找一个不冲突的文件名。 */
+    private static File uniqueIn(File dir, String name) {
+        File f = new File(dir, name);
+        if (!f.exists()) return f;
+        int dot = name.lastIndexOf('.');
+        String base = dot > 0 ? name.substring(0, dot) : name;
+        String ext = dot > 0 ? name.substring(dot) : "";
+        return new File(dir, base + "_" + System.currentTimeMillis() + ext);
+    }
+
     /* ========== 请求处理 ========== */
 
     private class Handler implements Runnable {
@@ -180,7 +219,7 @@ public class TransferServer {
                     String remoteName = p.length > 1 ? p[1] : remoteIp;
                     boolean ok = callback.onConnectRequest(remoteName, remoteIp);
                     if (ok) {
-                        pairedIps.add(remoteIp);
+                        addPaired(remoteIp);
                         Protocol.writeLine(out, Protocol.ACCEPT);
                     } else {
                         Protocol.writeLine(out, Protocol.REJECT);
@@ -205,26 +244,52 @@ public class TransferServer {
                     }
 
                 } else if (Protocol.GET.equals(cmd)) {
+                    // GET <enc(name)> [<offset>]
                     if (!pairedIps.contains(remoteIp)) {
                         Protocol.writeLine(out, Protocol.NO + " 未配对");
                         return;
                     }
                     String name = p.length > 1 ? Protocol.dec(p[1]) : "";
+                    long offset = 0;
+                    boolean withOffset = false;
+                    if (p.length > 2) {
+                        try {
+                            offset = Long.parseLong(p[2].trim());
+                            withOffset = true;
+                        } catch (NumberFormatException ignored) {}
+                    }
+                    // 不暴露 .part 临时文件
+                    if (name.endsWith(".part")) {
+                        Protocol.writeLine(out, Protocol.NO + " 文件不存在");
+                        return;
+                    }
                     File file = safeFile(name);
                     if (file == null || !file.isFile()) {
                         Protocol.writeLine(out, Protocol.NO + " 文件不存在");
                         return;
                     }
-                    Protocol.writeLine(out, Protocol.FILE + " "
-                            + Protocol.enc(file.getName()) + " " + file.length());
-                    FileInputStream fin = new FileInputStream(file);
+                    long total = file.length();
+                    if (offset < 0) offset = 0;
+                    if (offset > total) {
+                        Protocol.writeLine(out, Protocol.NO + " 续传位置无效");
+                        return;
+                    }
+                    if (withOffset) {
+                        Protocol.writeLine(out, Protocol.FILE + " "
+                                + Protocol.enc(file.getName()) + " " + total + " " + offset);
+                    } else {
+                        Protocol.writeLine(out, Protocol.FILE + " "
+                                + Protocol.enc(file.getName()) + " " + total);
+                    }
+                    RandomAccessFile raf = new RandomAccessFile(file, "r");
                     try {
+                        raf.seek(offset);
                         byte[] buf = new byte[32768];
                         int n;
-                        while ((n = fin.read(buf)) != -1) out.write(buf, 0, n);
+                        while ((n = raf.read(buf)) != -1) out.write(buf, 0, n);
                         out.flush();
                     } finally {
-                        fin.close();
+                        raf.close();
                     }
 
                 } else if (Protocol.SEND.equals(cmd)) {
@@ -235,54 +300,80 @@ public class TransferServer {
                     }
                     String senderName = p.length > 1 ? p[1] : remoteIp;
                     String filename = p.length > 2 ? Protocol.dec(p[2]) : "file";
-                    long size = p.length > 3 ? Long.parseLong(p[3]) : 0;
+                    long size = 0;
+                    try {
+                        if (p.length > 3) size = Long.parseLong(p[3].trim());
+                    } catch (NumberFormatException ignored) {}
 
-                    boolean ok = callback.onReceiveRequest(senderName, filename, size);
+                    File dir = getDir();
+                    File checked = resolveFileIn(dir, filename);
+                    String safeName = (checked != null) ? filename
+                            : ("received_" + System.currentTimeMillis());
+
+                    boolean ok = callback.onReceiveRequest(senderName, safeName, size);
                     if (!ok) {
                         Protocol.writeLine(out, Protocol.NO + " 对方拒绝接收");
                         return;
                     }
-                    Protocol.writeLine(out, Protocol.READY);
 
-                    // 接收文件数据到临时文件
-                    File temp = new File(getDir(), System.currentTimeMillis() + ".part");
-                    FileOutputStream fout = new FileOutputStream(temp);
+                    // 断点续传：已有 <name>.part 时从其长度续传
+                    File part = new File(dir, safeName + ".part");
+                    long offset = part.isFile() ? part.length() : 0;
+                    if (offset > size) {
+                        part.delete();
+                        offset = 0;
+                    }
+                    if (offset > 0) {
+                        Protocol.writeLine(out, Protocol.READY + " " + offset);
+                    } else {
+                        Protocol.writeLine(out, Protocol.READY);
+                    }
+
+                    boolean failed = false;
+                    FileOutputStream fout = new FileOutputStream(part, offset > 0);
                     try {
                         byte[] buf = new byte[32768];
-                        long remaining = size;
+                        long done = offset;
+                        long remaining = size - offset;
+                        long lastPost = done;
+                        callback.onProgress(senderName, safeName, done, size);
                         while (remaining > 0) {
                             int n = in.read(buf, 0, (int) Math.min(buf.length, remaining));
-                            if (n < 0) throw new EOFException("传输中断");
+                            if (n < 0) {
+                                failed = true;
+                                break;
+                            }
                             fout.write(buf, 0, n);
                             remaining -= n;
+                            done += n;
+                            if (done - lastPost >= PROGRESS_STEP) {
+                                callback.onProgress(senderName, safeName, done, size);
+                                lastPost = done;
+                            }
                         }
                         fout.getFD().sync();
                     } finally {
                         fout.close();
                     }
 
-                    // 重名则追加时间戳
-                    File dest = safeFile(filename);
-                    if (dest == null) dest = new File(getDir(), "received_" + System.currentTimeMillis());
-                    if (dest.exists()) {
-                        int dot = filename.lastIndexOf('.');
-                        if (dot > 0) {
-                            dest = new File(getDir(), filename.substring(0, dot)
-                                    + "_" + System.currentTimeMillis() + filename.substring(dot));
-                        } else {
-                            dest = new File(getDir(), filename + "_" + System.currentTimeMillis());
-                        }
+                    if (failed) {
+                        // 保留 .part，下次对方重发同名文件可续传
+                        Protocol.writeLine(out, Protocol.NO + " 传输中断（已保留 .part，可重试续传）");
+                        return;
                     }
-                    if (!temp.renameTo(dest)) {
+                    callback.onProgress(senderName, safeName, size, size);
+
+                    File dest = uniqueIn(dir, safeName);
+                    if (!part.renameTo(dest)) {
                         Protocol.writeLine(out, Protocol.NO + " 保存失败");
-                        temp.delete();
+                        part.delete();
                         return;
                     }
                     Protocol.writeLine(out, Protocol.OK + " 已接收 " + dest.getName());
                     callback.onFileReceived(senderName, dest.getName());
 
                 } else if (Protocol.BYE.equals(cmd)) {
-                    pairedIps.remove(remoteIp);
+                    removePaired(remoteIp);
                     Protocol.writeLine(out, Protocol.OK + " 已断开");
                 } else {
                     Protocol.writeLine(out, Protocol.NO + " 未知命令");
