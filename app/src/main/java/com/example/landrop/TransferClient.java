@@ -192,6 +192,34 @@ public class TransferClient {
         }
     }
 
+    /* ---------- 推送剪贴板文本 ---------- */
+
+    /**
+     * 把本机剪贴板文本推送到对方剪贴板。
+     * 协议：CLIP <myName> <size> -> READY -> size 字节 UTF-8 文本 -> OK
+     * @return true=对方已复制到剪贴板
+     */
+    public static boolean sendClipboard(String ip, String myName, String text) throws IOException {
+        byte[] data = text.getBytes("UTF-8");
+        Socket s = open(ip);
+        try {
+            OutputStream out = new BufferedOutputStream(s.getOutputStream());
+            InputStream in = new BufferedInputStream(s.getInputStream());
+            Protocol.writeLine(out, Protocol.CLIP + " " + myName + " " + data.length);
+
+            String resp = Protocol.readLine(in);
+            if (resp == null || !Protocol.READY.equals(resp)) return false;
+
+            out.write(data);
+            out.flush();
+
+            String ok = Protocol.readLine(in);
+            return ok != null && ok.startsWith(Protocol.OK);
+        } finally {
+            close(s);
+        }
+    }
+
     /** 通知对方断开配对（发 BYE，失败忽略）。 */
     public static void bye(String ip) {
         Socket s = null;

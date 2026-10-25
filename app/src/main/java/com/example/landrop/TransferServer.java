@@ -53,6 +53,10 @@ public class TransferServer {
         void onFileReceived(String remoteName, String filename);
         /** 接收进度（后台线程调用）。 */
         void onProgress(String remoteName, String filename, long done, long total);
+        /** 收到剪贴板文本推送，返回是否接收（阻塞直到用户选择）。 */
+        boolean onClipboardRequest(String remoteName, long size);
+        /** 剪贴板文本已接收，请写入系统剪贴板。 */
+        void onClipboardReceived(String remoteName, String text);
     }
 
     public TransferServer(Context context, ServerCallback callback) {
@@ -375,6 +379,49 @@ public class TransferServer {
                 } else if (Protocol.BYE.equals(cmd)) {
                     removePaired(remoteIp);
                     Protocol.writeLine(out, Protocol.OK + " 已断开");
+
+                } else if (Protocol.CLIP.equals(cmd)) {
+                    // CLIP <senderName> <size> -> READY -> size 字节 UTF-8 文本 -> OK
+                    if (!pairedIps.contains(remoteIp)) {
+                        Protocol.writeLine(out, Protocol.NO + " 未配对");
+                        return;
+                    }
+                    String senderName = p.length > 1 ? p[1] : remoteIp;
+                    long size = 0;
+                    try {
+                        if (p.length > 2) size = Long.parseLong(p[2].trim());
+                    } catch (NumberFormatException ignored) {}
+                    // 限制 4MB，防止恶意大文本撑爆内存
+                    if (size < 0 || size > 4L * 1024 * 1024) {
+                        Protocol.writeLine(out, Protocol.NO + " 内容过大");
+                        return;
+                    }
+                    boolean ok = callback.onClipboardRequest(senderName, size);
+                    if (!ok) {
+                        Protocol.writeLine(out, Protocol.NO + " 对方拒绝接收");
+                        return;
+                    }
+                    Protocol.writeLine(out, Protocol.READY);
+
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[32768];
+                    long remaining = size;
+                    boolean failed = false;
+                    while (remaining > 0) {
+                        int n = in.read(buf, 0, (int) Math.min(buf.length, remaining));
+                        if (n < 0) { failed = true; break; }
+                        baos.write(buf, 0, n);
+                        remaining -= n;
+                    }
+                    if (failed) {
+                        Protocol.writeLine(out, Protocol.NO + " 传输中断");
+                        return;
+                    }
+                    String text = new String(baos.toByteArray(),
+                            java.nio.charset.Charset.forName("UTF-8"));
+                    callback.onClipboardReceived(senderName, text);
+                    Protocol.writeLine(out, Protocol.OK + " 已复制到剪贴板");
+
                 } else {
                     Protocol.writeLine(out, Protocol.NO + " 未知命令");
                 }

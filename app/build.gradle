@@ -14,8 +14,8 @@ android {
         applicationId 'com.example.landrop'
         minSdk 19          // Android 4.4
         targetSdk 28       // 兼容老系统，避免新版限制
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
     }
 
     signingConfigs {

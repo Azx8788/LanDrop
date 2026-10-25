@@ -44,6 +44,7 @@ public class Protocol {
     public static final String NO       = "NO";
     public static final String OK       = "OK";
     public static final String BYE      = "BYE";
+    public static final String CLIP     = "CLIP";   // 剪贴板文本传输
 
     /** 读一行（到 \n），返回去掉 \r\n 的内容；流结束返回 null。 */
     public static String readLine(InputStream in) throws IOException {

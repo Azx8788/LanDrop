@@ -4,6 +4,8 @@ import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -238,6 +240,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         if (d.paired) {
             items.add("浏览对方文件 / 下载");
             items.add("发送文件给对方");
+            items.add("发送剪贴板给对方");
             items.add("断开配对");
         }
         final String[] arr = items.toArray(new String[0]);
@@ -252,8 +255,10 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                         doConnect(d);
                     } else if (choice.startsWith("浏览")) {
                         browseFiles(d);
-                    } else if (choice.startsWith("发送")) {
+                    } else if (choice.startsWith("发送文件")) {
                         pickAndSend(d);
+                    } else if (choice.startsWith("发送剪贴板")) {
+                        sendClipboardTo(d);
                     } else if (choice.startsWith("断开")) {
                         doDisconnect(d);
                     }
@@ -519,6 +524,49 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         }
     }
 
+    /* ========== 发送剪贴板 ========== */
+
+    private void sendClipboardTo(final Device d) {
+        ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        if (cm == null || !cm.hasPrimaryClip()) {
+            toast("剪贴板为空");
+            return;
+        }
+        CharSequence cs = cm.getPrimaryClip().getItemAt(0).getText();
+        if (cs == null || cs.length() == 0) {
+            toast("剪贴板不是文本");
+            return;
+        }
+        final String text = cs.toString();
+        tvHint.setText("正在发送剪贴板到 " + d.name + "…");
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean ok = false;
+                String err = null;
+                try {
+                    ok = TransferClient.sendClipboard(d.ip, myName, text);
+                } catch (IOException e) {
+                    err = e.getMessage();
+                }
+                final boolean okFinal = ok;
+                final String errFinal = err;
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (okFinal) {
+                            toast("剪贴板已发送到 " + d.name);
+                            tvHint.setText("剪贴板发送完成");
+                        } else {
+                            toast("发送失败" + (errFinal != null ? "：" + errFinal : "（对方拒绝）"));
+                            tvHint.setText("剪贴板发送失败");
+                        }
+                    }
+                });
+            }
+        }, "LanDrop-Clip").start();
+    }
+
     /* ========== 服务端回调（从后台线程 -> UI） ========== */
 
     @Override
@@ -610,6 +658,50 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                 }
                 toast("已接收 " + remoteName + " 的文件：\n" + path);
                 tvHint.setText("已接收：" + path);
+            }
+        });
+    }
+
+    @Override
+    public boolean onClipboardRequest(final String remoteName, final long size) {
+        final boolean[] result = {false};
+        final CountDownLatch latch = new CountDownLatch(1);
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                new AlertDialog.Builder(MainActivity.this)
+                    .setTitle("接收剪贴板")
+                    .setMessage(remoteName + " 要发送剪贴板内容（" + humanSize(size) + "）\n"
+                            + "\n接收后会直接复制到你的剪贴板，会覆盖现有内容。")
+                    .setCancelable(false)
+                    .setPositiveButton("接收", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            result[0] = true; latch.countDown();
+                        }
+                    })
+                    .setNegativeButton("拒绝", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int w) {
+                            result[0] = false; latch.countDown();
+                        }
+                    })
+                    .show();
+            }
+        });
+        try { latch.await(30, TimeUnit.SECONDS); } catch (InterruptedException ignored) {}
+        return result[0];
+    }
+
+    @Override
+    public void onClipboardReceived(final String remoteName, final String text) {
+        ui.post(new Runnable() {
+            @Override
+            public void run() {
+                ClipboardManager cm = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                if (cm == null) return;
+                cm.setPrimaryClip(ClipData.newPlainText("LanDrop", text));
+                String preview = text.length() > 50 ? text.substring(0, 50) + "…" : text;
+                toast("已复制 " + remoteName + " 的剪贴板：\n" + preview);
+                tvHint.setText("已复制剪贴板：" + preview);
             }
         });
     }
