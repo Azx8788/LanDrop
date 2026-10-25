@@ -54,7 +54,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="说明：只有相互配对的设备才能传文件，同一局域网其他设备看不到传输内容。文件保存在应用目录 landrop/ 下。"
+        android:text="说明：只有相互配对的设备才能传文件，同一局域网其他设备看不到传输内容。文件保存在公共下载目录 Download/landrop（存储不可用时回退应用私有目录）。"
         android:textSize="11sp"
         android:paddingTop="6dp" />
 

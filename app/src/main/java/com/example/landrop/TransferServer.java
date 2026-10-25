@@ -1,6 +1,7 @@
 package com.example.landrop;
 
 import android.content.Context;
+import android.os.Environment;
 
 import java.io.*;
 import java.net.*;
@@ -94,22 +95,61 @@ public class TransferServer {
 
     /* ========== 接收目录 ========== */
 
+    /**
+     * 解析文件保存目录。
+     *
+     * 优先使用外部存储的公共下载目录 Download/landrop，这样接收到的文件
+     * 在系统文件管理器、下载应用里都能直接看到，卸载应用也不会被删。
+     * 外部存储不可用或目录无法创建时，回退到应用私有目录。
+     */
+    public static File resolveSaveDir(Context context) throws IOException {
+        Context app = context.getApplicationContext();
+        if (app == null) app = context;
+
+        File dir = null;
+        if (Environment.MEDIA_MOUNTED.equals(Environment.getExternalStorageState())) {
+            File downloads = Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS);
+            if (downloads != null) {
+                File publicDir = new File(downloads, "landrop");
+                if (publicDir.isDirectory()) {
+                    // 目录已存在时确认可写（存储权限被回收时 canWrite 为 false）
+                    if (publicDir.canWrite()) dir = publicDir;
+                } else if (publicDir.mkdirs()) {
+                    dir = publicDir;
+                }
+            }
+        }
+
+        if (dir == null) {
+            dir = app.getExternalFilesDir("landrop");
+            if (dir == null) dir = new File(app.getFilesDir(), "landrop");
+            if (!dir.isDirectory() && !dir.mkdirs()) throw new IOException("无法创建目录");
+        }
+        return dir.getCanonicalFile();
+    }
+
     private File getDir() throws IOException {
-        File d = context.getExternalFilesDir("landrop");
-        if (d == null) d = new File(context.getFilesDir(), "landrop");
-        if (!d.exists() && !d.mkdirs()) throw new IOException("无法创建目录");
-        return d.getCanonicalFile();
+        return resolveSaveDir(context);
+    }
+
+    /**
+     * 在指定目录内解析文件名，阻止路径穿越。
+     * 文件名为空、包含路径分隔符或解析后逃出目录时返回 null。
+     */
+    public static File resolveFileIn(File dir, String name) throws IOException {
+        if (name == null || name.length() == 0
+                || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0
+                || name.indexOf('\0') >= 0) return null;
+        File canonicalDir = dir.getCanonicalFile();
+        File f = new File(canonicalDir, name).getCanonicalFile();
+        if (!canonicalDir.equals(f.getParentFile())) return null;
+        return f;
     }
 
     /** 阻止路径穿越。 */
     private File safeFile(String name) throws IOException {
-        if (name == null || name.length() == 0
-                || name.indexOf('/') >= 0 || name.indexOf('\\') >= 0
-                || name.indexOf('\0') >= 0) return null;
-        File dir = getDir();
-        File f = new File(dir, name).getCanonicalFile();
-        if (!f.getParentFile().equals(dir)) return null;
-        return f;
+        return resolveFileIn(getDir(), name);
     }
 
     /* ========== 请求处理 ========== */

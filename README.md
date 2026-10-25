@@ -6,6 +6,7 @@
 ## 特点
 
 - **兼容安卓 4.4**（minSdk 19），老设备友好
+- **接收即落盘**：收到的文件直接保存到公共下载目录 `Download/landrop/`，文件管理器和下载应用里可直接看到
 - **零第三方依赖**：Android 纯 Java 标准库；PC 用 Go 标准库，编译成单个 exe
 - **APK / exe 极小**
 - **配对机制**：只有相互同意的设备才能传文件，同一局域网其他设备看不到传输内容
@@ -94,7 +95,7 @@ q                     退出
 
 ## 文件存储
 
-- Android：应用专属目录 `Android/data/com.example.landrop/files/landrop/`
+- Android：公共下载目录 `Download/landrop/`（Android 6.0+ 首次启动需允许存储权限；外部存储不可用时回退到应用私有目录 `Android/data/com.example.landrop/files/landrop/`）
 - PC：exe 同目录下的 `landrop/`
 
 ## 安全提醒

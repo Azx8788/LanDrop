@@ -6,8 +6,15 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
 
+    <!-- 存储权限：写入公共下载目录 Download/landrop；Android 6.0+ 需在运行时申请 -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <!-- requestLegacyExternalStorage：Android 10 上继续使用旧的公共存储访问方式。
+         targetSdk 28 本身默认就是旧模型，这里显式声明以表明意图。 -->
     <application
         android:allowBackup="false"
+        android:requestLegacyExternalStorage="true"
         android:label="@string/app_name"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Holo.Light.NoActionBar">

@@ -1,13 +1,16 @@
 package com.example.landrop;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -36,6 +39,7 @@ import java.util.concurrent.TimeUnit;
 public class MainActivity extends Activity implements TransferServer.ServerCallback {
 
     private static final int REQ_PICK_FILE = 100;
+    private static final int REQ_STORAGE = 101;
 
     private TextView tvInfo;
     private TextView tvHint;
@@ -72,6 +76,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
         myName = Protocol.androidName(myIp);
 
         server = new TransferServer(this, this);
+        ensureStoragePermission();
 
         btnServer.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { toggleServer(); }
@@ -117,7 +122,49 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
     private void refreshInfo() {
         String state = server.isRunning() ? "服务运行中" : "服务未启动";
         tvInfo.setText("LanDrop  " + myName + "\nIP: " + myIp
-                + "  端口: " + Protocol.PORT + "\n" + state);
+                + "  端口: " + Protocol.PORT + "\n" + state
+                + "\n保存到: " + saveDirText());
+    }
+
+    private String saveDirText() {
+        try {
+            return TransferServer.resolveSaveDir(this).getAbsolutePath();
+        } catch (IOException e) {
+            return "不可用";
+        }
+    }
+
+    /* ========== 存储权限 ========== */
+
+    /** Android 6.0+ 申请存储权限；未授予时服务仍可启动，保存目录回退到应用私有目录。 */
+    private void ensureStoragePermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return;
+        if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED) return;
+        requestPermissions(new String[]{
+                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                Manifest.permission.READ_EXTERNAL_STORAGE
+        }, REQ_STORAGE);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_STORAGE) return;
+        boolean granted = false;
+        for (int i = 0; i < permissions.length && i < grantResults.length; i++) {
+            if (Manifest.permission.WRITE_EXTERNAL_STORAGE.equals(permissions[i])
+                    && grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                granted = true;
+            }
+        }
+        if (granted) {
+            toast("已获得存储权限，文件将保存到 Download/landrop");
+        } else {
+            toast("未获得存储权限，文件将保存到应用私有目录");
+        }
+        refreshInfo();
     }
 
     /* ========== 扫描设备 ========== */
@@ -288,10 +335,9 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                 String err = null;
                 File target = null;
                 try {
-                    File dir = getExternalFilesDir("landrop");
-                    if (dir == null) dir = new File(getFilesDir(), "landrop");
-                    if (!dir.exists()) dir.mkdirs();
-                    target = new File(dir, f.name);
+                    File dir = TransferServer.resolveSaveDir(MainActivity.this);
+                    target = TransferServer.resolveFileIn(dir, f.name);
+                    if (target == null) throw new IOException("文件名不合法");
                     if (target.exists()) {
                         target = new File(dir, System.currentTimeMillis() + "_" + f.name);
                     }
@@ -306,7 +352,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
                     public void run() {
                         if (errFinal == null) {
                             toast("已下载：" + targetFinal.getName());
-                            tvHint.setText("下载完成，保存在 landrop/ 目录");
+                            tvHint.setText("已下载：" + targetFinal.getName());
                         } else {
                             toast("下载失败：" + errFinal);
                             tvHint.setText("下载失败");
@@ -481,7 +527,7 @@ public class MainActivity extends Activity implements TransferServer.ServerCallb
             @Override
             public void run() {
                 toast("已接收 " + remoteName + " 的文件：" + filename);
-                tvHint.setText("已接收：" + filename + "（landrop/ 目录）");
+                tvHint.setText("已接收：" + filename);
             }
         });
     }
